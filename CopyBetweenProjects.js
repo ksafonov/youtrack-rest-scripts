@@ -70,6 +70,10 @@ function executeRequest(targetUrl, method, postData, proxy, contentType, cookies
             options.headers = {};
         }
     }
+
+    if (postData) {
+        options.headers["Content-Length"] = postData.length;
+    }
     if (contentType) {
         options.headers["Content-Type"] = contentType;
     }

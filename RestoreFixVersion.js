@@ -1,6 +1,5 @@
 var http = require('http');
 var url = require('url');
-var pd = require('./pretty-data.js');
 var when = require('when');
 var xml2js = require('xml2js');
 
@@ -10,10 +9,10 @@ var password = process.argv[3];
 
 var host = 'http://youtrack.jetbrains.com';
 var sourceProject = "WEB";
-var sourceSubsystem = null; //"HTML";
+var sourceSubsystem = "CoffeeScript";
 var sourceFieldName = "Fix versions";
-var targetFieldName = "Fix";
-var max = 2500;
+var targetFieldName = "Fix in";
+var max = 1000;
 var fieldValuePrefix = '';
 
 //var host = 'http://codereview4intellij.myjetbrains.com/youtrack';
@@ -57,6 +56,10 @@ function executeRequest(targetUrl, method, postData, proxy, contentType, cookies
         if (!options.headers) {
             options.headers = {};
         }
+    }
+
+    if (postData) {
+        options.headers["Content-Length"] = postData.length;
     }
     if (contentType) {
         options.headers["Content-Type"] = contentType;
@@ -152,33 +155,58 @@ function addPrefixIfNeeded(value) {
     }
 }
 
+function getFieldChangeValue(change, name, prop) {
+    for (var i = 0; i < change.field.length; i++) {
+        var field = change.field[i];
+        if (field.$.name == name) {
+            return field[prop];
+        }
+    }
+    return null;
+}
+
 /**
  *
  * @param issue
  * @param cookies
  * @return {Promise}
  */
-function processIssue(issue, cookies) {
+function processIssue(currentId, cookies) {
     var defer = when.defer();
-    var currentId = issue.$.id;
     var line = '<tr><td><a href="' + host + '/issue/' + currentId + '">' + currentId + '</a></td><td>';
-    if (sourceSubsystem != null) {
-        var value = getFieldValue(issue, 'Subsystem');
-        var subsystem = Array.isArray(value) ? value[0] : value;
-        if (sourceSubsystem != subsystem) {
-            console.log('Unexpected subsystem: ' + subsystem);
-            console.flush();
-            process.exit(-1);
-        }
-    }
 
     executeGet(host + '/rest/issue/' + currentId + '/changes', proxy, cookies).then(function (response) {
         parseXml(response.body).then(function (xml) {
             var changes = xml.changes.change;
-            for (var i = 0; i < changes.length; i++) {
-
+            if (changes.length == 0) {
+                defer.resolve();
+                return;
             }
-            defer.resolve();
+
+            var lastChange = changes[changes.length - 1];
+            var oldValue = getFieldChangeValue(lastChange, sourceFieldName, "oldValue");
+            var newValue = getFieldChangeValue(lastChange, sourceFieldName, "newValue");
+            if ('kirill.safonov' == getFieldChangeValue(lastChange, "updaterName", "value") && oldValue && !newValue) {
+                var targetFieldValue = '';
+                for (var j = 0; j < oldValue.length; j++) {
+                    if (targetFieldValue.length > 0) {
+                        targetFieldValue += ', ';
+                    }
+                    targetFieldValue += addPrefixIfNeeded(oldValue[j]);
+                }
+                executePost(host + '/rest/issue/' + currentId + '/execute', 'command=' + targetFieldName + ': ' + targetFieldValue + '&disableNotifications=true', proxy, 'application/x-www-form-urlencoded', cookies).then(function () {
+                    line += targetFieldName + '=' + targetFieldValue + '</td></tr>';
+                    console.log(line);
+                    defer.resolve();
+                });
+            }
+            else {
+                line += 'skipped (source field is empty)</td></tr>';
+                console.log(line);
+                skipped++;
+                defer.resolve();
+                return defer.promise;
+            }
         });
     });
 
@@ -262,7 +290,7 @@ function processInChunks(cookies, chunkSize, delayInSeconds) {
                     setTimeout(processInChunks(cookies, chunkSize, delayInSeconds), delayInSeconds * 1000);
                 }
                 else {
-                    processIssue(issues[i], cookies).then(function () {
+                    processIssue(issues[i].$.id, cookies).then(function () {
                         processed++;
                         i++;
                         takeNext();
